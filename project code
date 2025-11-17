@@ -1,0 +1,886 @@
+import java.util.Scanner;
+
+public class OnlineExaminationSystem {
+
+    // Constants
+    static final int ROLE_STUDENT = 1;
+    static final int ROLE_TEACHER = 2;
+    static final int ROLE_ADMIN = 3;
+
+    static final int Q_SINGLE = 1;      // Single-choice
+    static final int Q_MULTI = 2;       // Multi-select MCQ
+    static final int Q_TRUE_FALSE = 3;  // True/False
+    static final int Q_SUBJECTIVE = 4;  // Subjective (manual grading)
+
+    static final int STATUS_ACTIVE = 1;
+    static final int STATUS_SUBMITTED = 2;
+    static final int STATUS_TIMEOUT = 3;
+
+    static final int MAX_USERS = 200;
+    static final int MAX_EXAMS = 200;
+    static final int MAX_QUESTIONS_PER_EXAM = 100;
+    static final int MAX_CHOICES = 10;
+    static final int MAX_ASSIGN = 200;
+    static final int MAX_SESSIONS = 1000;
+    static final int MAX_GRADES = 1000;
+    static final int MAX_ANSWERS_PER_SESSION = 100;
+
+    // Data storage
+    static User[] users = new User[MAX_USERS];
+    static int userCount = 0;
+
+    static Exam[] exams = new Exam[MAX_EXAMS];
+    static int examCount = 0;
+
+    static ExamSession[] sessions = new ExamSession[MAX_SESSIONS];
+    static int sessionCount = 0;
+
+    static Grade[] grades = new Grade[MAX_GRADES];
+    static int gradeCount = 0;
+
+    static int nextUserId = 1;
+    static int nextExamId = 1;
+    static int nextQuestionId = 1;
+    static int nextSessionId = 1;
+
+    static Scanner sc = new Scanner(System.in);
+
+    // Data classes (simple, using basic syntax)
+    static class User {
+        int id;
+        String username;
+        String fullName;
+        String password;
+        int role;
+
+        User(int id, String username, String fullName, String password, int role) {
+            this.id = id;
+            this.username = username;
+            this.fullName = fullName;
+            this.password = password;
+            this.role = role;
+        }
+
+        public String roleName() {
+            if (role == ROLE_STUDENT) return "STUDENT";
+            if (role == ROLE_TEACHER) return "TEACHER";
+            return "ADMIN";
+        }
+
+        public String toString() {
+            return id + " | " + username + " | " + fullName + " | " + roleName();
+        }
+    }
+
+    static class Exam {
+        int id;
+        int ownerTeacherId;
+        String title;
+        String description;
+        int durationMinutes;
+        boolean published;
+
+        Question[] questions = new Question[MAX_QUESTIONS_PER_EXAM];
+        int qCount = 0;
+
+        int[] assignedStudentIds = new int[MAX_ASSIGN];
+        int assignedCount = 0;
+
+        double totalPoints() {
+            double sum = 0;
+            int i = 0;
+            while (i < qCount) {
+                sum += questions[i].points;
+                i++;
+            }
+            return sum;
+        }
+
+        public String toString() {
+            return "Exam " + id + " | " + title + " | dur=" + durationMinutes + "m | published=" + published + " | points=" + totalPoints();
+        }
+    }
+
+    static class Question {
+        int id;
+        int type;
+        String text;
+        double points;
+
+        // For MCQ
+        String[] choices = new String[MAX_CHOICES];
+        int choiceCount = 0;
+
+        // For single-choice
+        int correctIndex = -1;
+
+        // For multi-select
+        int[] correctIndexes = new int[MAX_CHOICES];
+        int correctIdxCount = 0;
+
+        // For true/false
+        boolean correctTrue;
+
+        public String typeName() {
+            if (type == Q_SINGLE) return "Single Choice";
+            if (type == Q_MULTI) return "Multi Choice";
+            if (type == Q_TRUE_FALSE) return "True/False";
+            return "Subjective";
+        }
+
+        public String toString() {
+            return "Q" + id + " [" + typeName() + "] (" + points + " pts) " + text;
+        }
+    }
+
+    static class Answer {
+        int questionId;
+        int[] selectedIndexes = new int[MAX_CHOICES];
+        int selectedCount = 0;
+        String textAnswer;
+        double score;
+    }
+
+    static class ExamSession {
+        int id;
+        int examId;
+        int studentId;
+        long startedAtMillis;
+        long expiresAtMillis;
+        int status;
+
+        Answer[] answers = new Answer[MAX_ANSWERS_PER_SESSION];
+        int ansCount = 0;
+
+        public String toString() {
+            return "Session " + id + " | exam=" + examId + " | student=" + studentId + " | status=" + statusName();
+        }
+
+        String statusName() {
+            if (status == STATUS_ACTIVE) return "ACTIVE";
+            if (status == STATUS_SUBMITTED) return "SUBMITTED";
+            return "TIMEOUT";
+        }
+    }
+
+    static class Grade {
+        int sessionId;
+        double autoScore;
+        double manualScore;
+
+        public String toString() {
+            return "Grade{session=" + sessionId + ", auto=" + autoScore + ", manual=" + manualScore + ", total=" + (autoScore + manualScore) + "}";
+        }
+    }
+
+    // Main
+    public static void main(String[] args) {
+        seedData();
+        while (true) {
+            println("\n=== Online Examination System (Java - Basic) ===");
+            println("1) Login");
+            println("2) Register Student");
+            println("3) Register Teacher");
+            println("4) Exit");
+            int c = readInt("Choose: ");
+            if (c == 1) {
+                User u = login();
+                if (u == null) {
+                    println("Invalid credentials.");
+                } else {
+                    if (u.role == ROLE_ADMIN) adminMenu(u);
+                    else if (u.role == ROLE_TEACHER) teacherMenu(u);
+                    else studentMenu(u);
+                }
+            } else if (c == 2) {
+                registerStudent();
+            } else if (c == 3) {
+                registerTeacher();
+            } else if (c == 4) {
+                println("Goodbye!");
+                break;
+            } else {
+                println("Invalid option.");
+            }
+        }
+    }
+
+    // Seed default users
+    static void seedData() {
+        addUser(new User(nextUserId++, "admin", "Admin User", "admin", ROLE_ADMIN));
+        addUser(new User(nextUserId++, "t1", "Teacher One", "t1", ROLE_TEACHER));
+        addUser(new User(nextUserId++, "s1", "Student One", "s1", ROLE_STUDENT));
+    }
+
+    // Menus
+    static void adminMenu(User admin) {
+        while (true) {
+            println("\n--- Admin Menu ---");
+            println("1) List users");
+            println("2) Create exam (as teacher)");
+            println("3) List exams");
+            println("4) Back");
+            int c = readInt("Choose: ");
+            if (c == 1) {
+                int i = 0;
+                while (i < userCount) {
+                    println(users[i].toString());
+                    i++;
+                }
+            } else if (c == 2) {
+                String tUser = readLine("Teacher username: ");
+                int idx = findUserIndexByUsername(tUser);
+                if (idx == -1 || users[idx].role != ROLE_TEACHER) {
+                    println("Teacher not found.");
+                } else {
+                    createExamFlow(users[idx].id);
+                }
+            } else if (c == 3) {
+                listAllExams();
+            } else if (c == 4) {
+                break;
+            } else {
+                println("Invalid option.");
+            }
+        }
+    }
+
+    static void teacherMenu(User t) {
+        while (true) {
+            println("\n--- Teacher Menu ---");
+            println("1) Create exam");
+            println("2) Add questions to my exam");
+            println("3) Publish exam");
+            println("4) Assign exam to student");
+            println("5) Manual grade subjective");
+            println("6) View analytics");
+            println("7) List my exams");
+            println("8) Back");
+            int c = readInt("Choose: ");
+            if (c == 1) {
+                createExamFlow(t.id);
+            } else if (c == 2) {
+                addQuestionsFlow(t.id);
+            } else if (c == 3) {
+                publishExamFlow(t.id);
+            } else if (c == 4) {
+                assignExamFlow(t.id);
+            } else if (c == 5) {
+                manualGradeFlow();
+            } else if (c == 6) {
+                analyticsFlow(t.id);
+            } else if (c == 7) {
+                listExamsByTeacher(t.id);
+            } else if (c == 8) {
+                break;
+            } else {
+                println("Invalid option.");
+            }
+        }
+    }
+
+    static void studentMenu(User s) {
+        while (true) {
+            println("\n--- Student Menu ---");
+            println("1) List assigned exams");
+            println("2) Start/take exam");
+            println("3) View my grades");
+            println("4) Back");
+            int c = readInt("Choose: ");
+            if (c == 1) {
+                listAssignedExams(s.id);
+            } else if (c == 2) {
+                startAndTakeExamFlow(s.id);
+            } else if (c == 3) {
+                viewMyGrades(s.id);
+            } else if (c == 4) {
+                break;
+            } else {
+                println("Invalid option.");
+            }
+        }
+    }
+
+    // Registration & Auth
+    static void registerStudent() {
+        String u = readLine("Username: ");
+        String f = readLine("Full name: ");
+        String p = readLine("Password: ");
+        if (findUserIndexByUsername(u) != -1) {
+            println("Username already exists.");
+            return;
+        }
+        addUser(new User(nextUserId++, u, f, p, ROLE_STUDENT));
+        println("Student registered.");
+    }
+
+    static void registerTeacher() {
+        String u = readLine("Username: ");
+        String f = readLine("Full name: ");
+        String p = readLine("Password: ");
+        if (findUserIndexByUsername(u) != -1) {
+            println("Username already exists.");
+            return;
+        }
+        addUser(new User(nextUserId++, u, f, p, ROLE_TEACHER));
+        println("Teacher registered.");
+    }
+
+    static User login() {
+        String u = readLine("Username: ");
+        String p = readLine("Password: ");
+        int idx = findUserIndexByUsername(u);
+        if (idx == -1) return null;
+        if (!users[idx].password.equals(p)) return null;
+        return users[idx];
+    }
+
+    // Teacher flows
+    static void createExamFlow(int teacherId) {
+        String title = readLine("Title: ");
+        String desc = readLine("Description: ");
+        int dur = readInt("Duration (minutes): ");
+        Exam e = new Exam();
+        e.id = nextExamId++;
+        e.ownerTeacherId = teacherId;
+        e.title = title;
+        e.description = desc;
+        e.durationMinutes = dur;
+        e.published = false;
+        addExam(e);
+        println("Created exam with ID: " + e.id);
+    }
+
+    static void addQuestionsFlow(int teacherId) {
+        int examId = readInt("Exam ID: ");
+        int exIdx = findExamIndexById(examId);
+        if (exIdx == -1) { println("Exam not found."); return; }
+        if (exams[exIdx].ownerTeacherId != teacherId) { println("Not your exam."); return; }
+        while (true) {
+            println("\nAdd Question:");
+            println("1) Single Choice");
+            println("2) Multi Choice");
+            println("3) True/False");
+            println("4) Subjective");
+            println("5) Done");
+            int c = readInt("Choose: ");
+            if (c == 5) break;
+            String text = readLine("Question text: ");
+            double pts = readDouble("Points: ");
+            Question q = new Question();
+            q.id = nextQuestionId++;
+            q.text = text;
+            q.points = pts;
+
+            if (c == 1) {
+                q.type = Q_SINGLE;
+                int n = readInt("How many choices (max " + MAX_CHOICES + "): ");
+                if (n > MAX_CHOICES) n = MAX_CHOICES;
+                int i = 0;
+                while (i < n) {
+                    q.choices[i] = readLine("Choice " + (i + 1) + ": ");
+                    i++;
+                }
+                q.choiceCount = n;
+                q.correctIndex = readInt("Correct choice number (1-" + n + "): ") - 1;
+            } else if (c == 2) {
+                q.type = Q_MULTI;
+                int n = readInt("How many choices (max " + MAX_CHOICES + "): ");
+                if (n > MAX_CHOICES) n = MAX_CHOICES;
+                int i = 0;
+                while (i < n) {
+                    q.choices[i] = readLine("Choice " + (i + 1) + ": ");
+                    i++;
+                }
+                q.choiceCount = n;
+                int totalCorrect = readInt("How many correct options? ");
+                if (totalCorrect > n) totalCorrect = n;
+                int j = 0;
+                while (j < totalCorrect) {
+                    int idx = readInt("Enter correct option number (" + (j + 1) + " of " + totalCorrect + "): ") - 1;
+                    if (idx >= 0 && idx < n) {
+                        q.correctIndexes[q.correctIdxCount++] = idx;
+                        j++;
+                    } else {
+                        println("Invalid index, try again.");
+                    }
+                }
+            } else if (c == 3) {
+                q.type = Q_TRUE_FALSE;
+                String tf = readLine("Correct answer (T/F): ");
+                q.correctTrue = tf.equalsIgnoreCase("T");
+            } else if (c == 4) {
+                q.type = Q_SUBJECTIVE;
+            } else {
+                println("Invalid type.");
+                continue;
+            }
+
+            if (exams[exIdx].qCount >= MAX_QUESTIONS_PER_EXAM) {
+                println("Max questions reached for this exam.");
+                break;
+            }
+            exams[exIdx].questions[exams[exIdx].qCount++] = q;
+            println("Question added (ID " + q.id + ").");
+        }
+    }
+
+    static void publishExamFlow(int teacherId) {
+        int examId = readInt("Exam ID: ");
+        int exIdx = findExamIndexById(examId);
+        if (exIdx == -1) { println("Exam not found."); return; }
+        if (exams[exIdx].ownerTeacherId != teacherId) { println("Not your exam."); return; }
+        if (exams[exIdx].qCount == 0) { println("Cannot publish empty exam."); return; }
+        exams[exIdx].published = true;
+        println("Exam published.");
+    }
+
+    static void assignExamFlow(int teacherId) {
+        int examId = readInt("Exam ID: ");
+        int exIdx = findExamIndexById(examId);
+        if (exIdx == -1) { println("Exam not found."); return; }
+        if (exams[exIdx].ownerTeacherId != teacherId) { println("Not your exam."); return; }
+        if (!exams[exIdx].published) { println("Publish exam first."); return; }
+
+        String stuUsername = readLine("Student username: ");
+        int uIdx = findUserIndexByUsername(stuUsername);
+        if (uIdx == -1 || users[uIdx].role != ROLE_STUDENT) { println("Student not found."); return; }
+
+        if (isStudentAssignedToExam(exams[exIdx], users[uIdx].id)) {
+            println("Already assigned.");
+            return;
+        }
+        if (exams[exIdx].assignedCount >= MAX_ASSIGN) {
+            println("Assignment list full.");
+            return;
+        }
+        exams[exIdx].assignedStudentIds[exams[exIdx].assignedCount++] = users[uIdx].id;
+        println("Assigned.");
+    }
+
+    static void manualGradeFlow() {
+        int sessionId = readInt("Session ID: ");
+        int sIdx = findSessionIndexById(sessionId);
+        if (sIdx == -1) { println("Session not found."); return; }
+        ExamSession s = sessions[sIdx];
+        int exIdx = findExamIndexById(s.examId);
+        if (exIdx == -1) { println("Exam not found."); return; }
+        Exam e = exams[exIdx];
+
+        double added = 0;
+        int i = 0;
+        while (i < e.qCount) {
+            Question q = e.questions[i];
+            if (q.type == Q_SUBJECTIVE) {
+                Answer a = findAnswerForQuestion(s, q.id);
+                println("\nSubjective Q: " + q.text + " (" + q.points + " pts)");
+                if (a == null || a.textAnswer == null) {
+                    println("No answer.");
+                } else {
+                    println("Student answer: " + a.textAnswer);
+                }
+                double sc = readDouble("Score to award (0-" + q.points + "): ");
+                if (sc < 0) sc = 0;
+                if (sc > q.points) sc = q.points;
+                if (a != null) a.score += sc;
+                added += sc;
+            }
+            i++;
+        }
+        Grade g = getOrCreateGrade(s.id);
+        g.manualScore += added;
+        println("Manual score added: " + added + ". Total now: " + (g.autoScore + g.manualScore));
+    }
+
+    static void analyticsFlow(int teacherId) {
+        int examId = readInt("Exam ID: ");
+        int exIdx = findExamIndexById(examId);
+        if (exIdx == -1) { println("Exam not found."); return; }
+        if (exams[exIdx].ownerTeacherId != teacherId) { println("Not your exam."); return; }
+        Exam e = exams[exIdx];
+
+        // Summary
+        int attempts = 0;
+        double sum = 0;
+        double min = 1e18;
+        double max = -1e18;
+
+        int si = 0;
+        while (si < sessionCount) {
+            ExamSession s = sessions[si];
+            if (s.examId == e.id && s.status != STATUS_ACTIVE) {
+                Grade g = findGradeBySessionId(s.id);
+                double total = (g == null) ? 0 : (g.autoScore + g.manualScore);
+                attempts++;
+                sum += total;
+                if (total < min) min = total;
+                if (total > max) max = total;
+            }
+            si++;
+        }
+        if (attempts == 0) {
+            println("No attempts yet.");
+        } else {
+            double avg = sum / attempts;
+            println("\n--- Exam Summary ---");
+            println("Exam: " + e.title + " (ID " + e.id + ")");
+            println("Total points: " + e.totalPoints());
+            println("Attempts: " + attempts + " | Avg: " + round2(avg) + " | Min: " + round2(min) + " | Max: " + round2(max));
+        }
+
+        // Item analysis (objective only)
+        println("\n--- Item Analysis ---");
+        int qi = 0;
+        while (qi < e.qCount) {
+            Question q = e.questions[qi];
+            if (q.type == Q_SUBJECTIVE) {
+                println("Q" + q.id + " [Subjective]: N/A");
+                qi++;
+                continue;
+            }
+            int correct = 0;
+            int answered = 0;
+            int sj = 0;
+            while (sj < sessionCount) {
+                ExamSession s = sessions[sj];
+                if (s.examId == e.id && s.status != STATUS_ACTIVE) {
+                    Answer a = findAnswerForQuestion(s, q.id);
+                    if (a != null) {
+                        answered++;
+                        if (isAnswerCorrect(q, a)) correct++;
+                    }
+                }
+                sj++;
+            }
+            double p = answered == 0 ? 0 : (correct * 1.0 / answered);
+            println("Q" + q.id + " [" + q.typeName() + "]: P(correct)=" + round2(p));
+            qi++;
+        }
+    }
+
+    // Student flows
+    static void listAssignedExams(int studentId) {
+        int i = 0;
+        boolean any = false;
+        while (i < examCount) {
+            Exam e = exams[i];
+            if (e.published && isStudentAssignedToExam(e, studentId)) {
+                println(e.toString());
+                any = true;
+            }
+            i++;
+        }
+        if (!any) println("No assigned exams.");
+    }
+
+    static void startAndTakeExamFlow(int studentId) {
+        int examId = readInt("Exam ID: ");
+        int exIdx = findExamIndexById(examId);
+        if (exIdx == -1) { println("Exam not found."); return; }
+        Exam e = exams[exIdx];
+        if (!e.published) { println("Exam not published."); return; }
+        if (!isStudentAssignedToExam(e, studentId)) { println("Not assigned to you."); return; }
+        if (hasSubmittedSession(studentId, e.id)) {
+            println("You already took this exam.");
+            return;
+        }
+
+        ExamSession s = new ExamSession();
+        s.id = nextSessionId++;
+        s.examId = e.id;
+        s.studentId = studentId;
+        s.startedAtMillis = System.currentTimeMillis();
+        s.expiresAtMillis = s.startedAtMillis + e.durationMinutes * 60L * 1000L;
+        s.status = STATUS_ACTIVE;
+
+        addSession(s);
+        println("\nStarting exam: " + e.title + " | Duration: " + e.durationMinutes + " minutes");
+        println("Total points: " + e.totalPoints());
+
+        int i = 0;
+        while (i < e.qCount) {
+            if (System.currentTimeMillis() > s.expiresAtMillis) {
+                s.status = STATUS_TIMEOUT;
+                println("\nTime is up! Auto-submitting.");
+                break;
+            }
+            Question q = e.questions[i];
+            println("\nQ" + (i + 1) + ": (" + q.points + " pts) " + q.text);
+            Answer a = new Answer();
+            a.questionId = q.id;
+
+            if (q.type == Q_SINGLE) {
+                int j = 0;
+                while (j < q.choiceCount) {
+                    println((j + 1) + ") " + q.choices[j]);
+                    j++;
+                }
+                int pick = readInt("Pick one (1-" + q.choiceCount + "): ") - 1;
+                if (pick < 0) pick = 0;
+                if (pick >= q.choiceCount) pick = q.choiceCount - 1;
+                a.selectedIndexes[a.selectedCount++] = pick;
+            } else if (q.type == Q_MULTI) {
+                int j = 0;
+                while (j < q.choiceCount) {
+                    println((j + 1) + ") " + q.choices[j]);
+                    j++;
+                }
+                String line = readLine("Pick multiple (comma-separated, e.g., 1,3): ").trim();
+                if (line.length() > 0) {
+                    String[] parts = line.split(",");
+                    int k = 0;
+                    while (k < parts.length && k < MAX_CHOICES) {
+                        String t = parts[k].trim();
+                        if (t.length() > 0) {
+                            try {
+                                int p = Integer.parseInt(t) - 1;
+                                if (p >= 0 && p < q.choiceCount) {
+                                    a.selectedIndexes[a.selectedCount++] = p;
+                                }
+                            } catch (Exception ex) {
+                                // ignore parse errors
+                            }
+                        }
+                        k++;
+                    }
+                }
+            } else if (q.type == Q_TRUE_FALSE) {
+                String tf = readLine("Answer (T/F): ");
+                int val = tf.equalsIgnoreCase("T") ? 1 : 0;
+                a.selectedIndexes[a.selectedCount++] = val;
+            } else if (q.type == Q_SUBJECTIVE) {
+                a.textAnswer = readLine("Your answer: ");
+            }
+
+            s.answers[s.ansCount++] = a;
+            i++;
+        }
+
+        if (s.status == STATUS_ACTIVE) s.status = STATUS_SUBMITTED;
+
+        // Auto-grade
+        double autoScore = 0;
+        int qi = 0;
+        while (qi < e.qCount) {
+            Question q = e.questions[qi];
+            Answer a = findAnswerForQuestion(s, q.id);
+            if (a != null) {
+                double sc = autoGrade(q, a);
+                a.score = sc;
+                autoScore += sc;
+            }
+            qi++;
+        }
+        Grade g = getOrCreateGrade(s.id);
+        g.autoScore = autoScore;
+
+        println("\nSubmitted! Auto-score: " + autoScore + " / " + e.totalPoints());
+        println("Session ID: " + s.id + " (note this for subjective manual grading by teacher)");
+    }
+
+    static void viewMyGrades(int studentId) {
+        boolean any = false;
+        int i = 0;
+        while (i < sessionCount) {
+            ExamSession s = sessions[i];
+            if (s.studentId == studentId && s.status != STATUS_ACTIVE) {
+                Grade g = findGradeBySessionId(s.id);
+                Exam e = findExamById(s.examId);
+                double total = (g == null) ? 0 : (g.autoScore + g.manualScore);
+                println("Session " + s.id + " | Exam: " + (e == null ? s.examId : e.title) + " | Total: " + total);
+                any = true;
+            }
+            i++;
+        }
+        if (!any) println("No grades yet.");
+    }
+
+    // Helpers: correctness, grading, searches
+    static boolean isAnswerCorrect(Question q, Answer a) {
+        if (q.type == Q_SINGLE) {
+            if (a.selectedCount != 1) return false;
+            return a.selectedIndexes[0] == q.correctIndex;
+        } else if (q.type == Q_MULTI) {
+            if (a.selectedCount != q.correctIdxCount) return false;
+            int i = 0;
+            while (i < a.selectedCount) {
+                int sel = a.selectedIndexes[i];
+                boolean found = false;
+                int j = 0;
+                while (j < q.correctIdxCount) {
+                    if (q.correctIndexes[j] == sel) { found = true; break; }
+                    j++;
+                }
+                if (!found) return false;
+                i++;
+            }
+            return true;
+        } else if (q.type == Q_TRUE_FALSE) {
+            if (a.selectedCount == 0) return false;
+            boolean ansTrue = a.selectedIndexes[0] == 1;
+            return ansTrue == q.correctTrue;
+        } else {
+            return false;
+        }
+    }
+
+    static double autoGrade(Question q, Answer a) {
+        if (q.type == Q_SUBJECTIVE) return 0;
+        return isAnswerCorrect(q, a) ? q.points : 0;
+    }
+
+    static Answer findAnswerForQuestion(ExamSession s, int qid) {
+        int i = 0;
+        while (i < s.ansCount) {
+            if (s.answers[i].questionId == qid) return s.answers[i];
+            i++;
+        }
+        return null;
+    }
+
+    static boolean isStudentAssignedToExam(Exam e, int studentId) {
+        int i = 0;
+        while (i < e.assignedCount) {
+            if (e.assignedStudentIds[i] == studentId) return true;
+            i++;
+        }
+        return false;
+    }
+
+    static boolean hasSubmittedSession(int studentId, int examId) {
+        int i = 0;
+        while (i < sessionCount) {
+            ExamSession s = sessions[i];
+            if (s.studentId == studentId && s.examId == examId && s.status != STATUS_ACTIVE) return true;
+            i++;
+        }
+        return false;
+    }
+
+    static int findUserIndexByUsername(String username) {
+        int i = 0;
+        while (i < userCount) {
+            if (users[i].username.equals(username)) return i;
+            i++;
+        }
+        return -1;
+    }
+
+    static int findExamIndexById(int id) {
+        int i = 0;
+        while (i < examCount) {
+            if (exams[i].id == id) return i;
+            i++;
+        }
+        return -1;
+    }
+
+    static Exam findExamById(int id) {
+        int idx = findExamIndexById(id);
+        if (idx == -1) return null;
+        return exams[idx];
+    }
+
+    static int findSessionIndexById(int id) {
+        int i = 0;
+        while (i < sessionCount) {
+            if (sessions[i].id == id) return i;
+            i++;
+        }
+        return -1;
+    }
+
+    static Grade findGradeBySessionId(int sid) {
+        int i = 0;
+        while (i < gradeCount) {
+            if (grades[i].sessionId == sid) return grades[i];
+            i++;
+        }
+        return null;
+    }
+
+    static Grade getOrCreateGrade(int sid) {
+        Grade g = findGradeBySessionId(sid);
+        if (g != null) return g;
+        g = new Grade();
+        g.sessionId = sid;
+        g.autoScore = 0;
+        g.manualScore = 0;
+        addGrade(g);
+        return g;
+    }
+
+    static void addUser(User u) {
+        if (userCount < MAX_USERS) users[userCount++] = u;
+    }
+
+    static void addExam(Exam e) {
+        if (examCount < MAX_EXAMS) exams[examCount++] = e;
+    }
+
+    static void addSession(ExamSession s) {
+        if (sessionCount < MAX_SESSIONS) sessions[sessionCount++] = s;
+    }
+
+    static void addGrade(Grade g) {
+        if (gradeCount < MAX_GRADES) grades[gradeCount++] = g;
+    }
+
+    static void listAllExams() {
+        int i = 0;
+        while (i < examCount) {
+            println(exams[i].toString());
+            i++;
+        }
+    }
+
+    static void listExamsByTeacher(int teacherId) {
+        int i = 0;
+        boolean any = false;
+        while (i < examCount) {
+            if (exams[i].ownerTeacherId == teacherId) {
+                println(exams[i].toString());
+                any = true;
+            }
+            i++;
+        }
+        if (!any) println("No exams yet.");
+    }
+
+    // IO helpers (basic)
+    static String readLine(String prompt) {
+        System.out.print(prompt);
+        return sc.nextLine();
+    }
+
+    static int readInt(String prompt) {
+        while (true) {
+            try {
+                String s = readLine(prompt).trim();
+                return Integer.parseInt(s);
+            } catch (Exception e) {
+                println("Enter an integer.");
+            }
+        }
+    }
+
+    static double readDouble(String prompt) {
+        while (true) {
+            try {
+                String s = readLine(prompt).trim();
+                return Double.parseDouble(s);
+            } catch (Exception e) {
+                println("Enter a number.");
+            }
+        }
+    }
+
+    static void println(String s) {
+        System.out.println(s);
+    }
+
+    static String round2(double d) {
+        long x = Math.round(d * 100);
+        return "" + (x / 100.0);
+    }
+}
