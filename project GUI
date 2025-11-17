@@ -1,0 +1,1509 @@
+import javax.swing.*;
+import javax.swing.border.EmptyBorder;
+import javax.swing.plaf.basic.BasicComboBoxRenderer;
+import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.table.DefaultTableModel;
+import javax.swing.table.JTableHeader;
+import java.awt.*;
+import java.awt.event.*;
+import java.awt.geom.RoundRectangle2D;
+import java.lang.reflect.Constructor;
+import java.util.Arrays;
+
+public class OnlineExaminationSystem {
+
+    // Constants
+    static final int ROLE_STUDENT = 1;
+    static final int ROLE_TEACHER = 2;
+    static final int ROLE_ADMIN = 3;
+
+    static final int Q_SINGLE = 1;      // Single-choice
+    static final int Q_MULTI = 2;       // Multi-select MCQ
+    static final int Q_TRUE_FALSE = 3;  // True/False
+    static final int Q_SUBJECTIVE = 4;  // Subjective (manual grading)
+
+    static final int STATUS_ACTIVE = 1;
+    static final int STATUS_SUBMITTED = 2;
+    static final int STATUS_TIMEOUT = 3;
+
+    static final int MAX_USERS = 200;
+    static final int MAX_EXAMS = 200;
+    static final int MAX_QUESTIONS_PER_EXAM = 100;
+    static final int MAX_CHOICES = 10;
+    static final int MAX_ASSIGN = 200;
+    static final int MAX_SESSIONS = 1000;
+    static final int MAX_GRADES = 1000;
+    static final int MAX_ANSWERS_PER_SESSION = 100;
+
+    // Data storage
+    static User[] users = new User[MAX_USERS];
+    static int userCount = 0;
+
+    static Exam[] exams = new Exam[MAX_EXAMS];
+    static int examCount = 0;
+
+    static ExamSession[] sessions = new ExamSession[MAX_SESSIONS];
+    static int sessionCount = 0;
+
+    static Grade[] grades = new Grade[MAX_GRADES];
+    static int gradeCount = 0;
+
+    static int nextUserId = 1;
+    static int nextExamId = 1;
+    static int nextQuestionId = 1;
+    static int nextSessionId = 1;
+
+    static User currentUser;
+
+    // ========== Data classes ==========
+    static class User {
+        int id;
+        String username;
+        String fullName;
+        String password;
+        int role;
+
+        User(int id, String username, String fullName, String password, int role) {
+            this.id = id;
+            this.username = username;
+            this.fullName = fullName;
+            this.password = password;
+            this.role = role;
+        }
+        String roleName() {
+            if (role == ROLE_STUDENT) return "STUDENT";
+            if (role == ROLE_TEACHER) return "TEACHER";
+            return "ADMIN";
+        }
+        public String toString() {
+            return id + " | " + username + " | " + fullName + " | " + roleName();
+        }
+    }
+
+    static class Exam {
+        int id;
+        int ownerTeacherId;
+        String title;
+        String description;
+        int durationMinutes;
+        boolean published;
+
+        Question[] questions = new Question[MAX_QUESTIONS_PER_EXAM];
+        int qCount = 0;
+
+        int[] assignedStudentIds = new int[MAX_ASSIGN];
+        int assignedCount = 0;
+
+        double totalPoints() {
+            double sum = 0;
+            for (int i = 0; i < qCount; i++) sum += questions[i].points;
+            return sum;
+        }
+        public String toString() {
+            return "Exam " + id + " | " + title + " | dur=" + durationMinutes + "m | published=" + published + " | points=" + totalPoints();
+        }
+    }
+
+    static class Question {
+        int id;
+        int type;
+        String text;
+        double points;
+
+        // For MCQ
+        String[] choices = new String[MAX_CHOICES];
+        int choiceCount = 0;
+
+        // For single-choice
+        int correctIndex = -1;
+
+        // For multi-select
+        int[] correctIndexes = new int[MAX_CHOICES];
+        int correctIdxCount = 0;
+
+        // For true/false
+        boolean correctTrue;
+
+        String typeName() {
+            if (type == Q_SINGLE) return "Single Choice";
+            if (type == Q_MULTI) return "Multi Choice";
+            if (type == Q_TRUE_FALSE) return "True/False";
+            return "Subjective";
+        }
+
+        public String toString() {
+            return "Q" + id + " [" + typeName() + "] (" + points + " pts) " + text;
+        }
+    }
+
+    static class Answer {
+        int questionId;
+        int[] selectedIndexes = new int[MAX_CHOICES];
+        int selectedCount = 0;
+        String textAnswer;
+        double score;
+    }
+
+    static class ExamSession {
+        int id;
+        int examId;
+        int studentId;
+        long startedAtMillis;
+        long expiresAtMillis;
+        int status;
+
+        Answer[] answers = new Answer[MAX_ANSWERS_PER_SESSION];
+        int ansCount = 0;
+
+        public String toString() {
+            return "Session " + id + " | exam=" + examId + " | student=" + studentId + " | status=" + statusName();
+        }
+
+        String statusName() {
+            if (status == STATUS_ACTIVE) return "ACTIVE";
+            if (status == STATUS_SUBMITTED) return "SUBMITTED";
+            return "TIMEOUT";
+        }
+    }
+
+    static class Grade {
+        int sessionId;
+        double autoScore;
+        double manualScore;
+
+        public String toString() {
+            return "Grade{session=" + sessionId + ", auto=" + autoScore + ", manual=" + manualScore + ", total=" + (autoScore + manualScore) + "}";
+        }
+    }
+
+    // ========== Main ==========
+    public static void main(String[] args) {
+        // Smoothness and AA
+        System.setProperty("swing.aatext", "true");
+        System.setProperty("awt.useSystemAAFontSettings", "on");
+        // Hardware accel (optional, harmless if not available)
+        System.setProperty("sun.java2d.opengl", "true");
+
+        // Look & Feel: Try FlatLaf (if on classpath), else Nimbus, else system
+        setBestLookAndFeel();
+
+        SwingUtilities.invokeLater(() -> {
+            seedData();
+            AppFrame f = new AppFrame();
+            f.setVisible(true);
+        });
+    }
+
+    static void setBestLookAndFeel() {
+        try {
+            // Try FlatLaf (no compile-time dependency, use reflection)
+            Class<?> lafClass = tryLoadClass("com.formdev.flatlaf.themes.FlatMacLightLaf");
+            if (lafClass == null) lafClass = tryLoadClass("com.formdev.flatlaf.FlatLightLaf");
+            if (lafClass != null) {
+                Constructor<?> ctor = lafClass.getDeclaredConstructor();
+                LookAndFeel laf = (LookAndFeel) ctor.newInstance();
+                UIManager.setLookAndFeel(laf);
+                tweakUIDefaults(true);
+                return;
+            }
+        } catch (Exception ignored) {}
+
+        // Nimbus fallback
+        try {
+            for (UIManager.LookAndFeelInfo info : UIManager.getInstalledLookAndFeels()) {
+                if ("Nimbus".equals(info.getName())) {
+                    UIManager.setLookAndFeel(info.getClassName());
+                    tweakUIDefaults(false);
+                    return;
+                }
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            tweakUIDefaults(false);
+        } catch (Exception ignored) {}
+    }
+
+    static Class<?> tryLoadClass(String fqcn) {
+        try { return Class.forName(fqcn); } catch (Throwable t) { return null; }
+    }
+
+    static void tweakUIDefaults(boolean flatlaf) {
+        // Consistent spacing and fonts
+        Font base = new Font("Segoe UI", Font.PLAIN, 13);
+        UIManager.put("defaultFont", base);
+        UIManager.put("Button.font", base);
+        UIManager.put("Label.font", base);
+        UIManager.put("TextField.font", base);
+        UIManager.put("PasswordField.font", base);
+        UIManager.put("TextArea.font", base);
+        UIManager.put("ComboBox.font", base);
+        UIManager.put("Table.font", base);
+        UIManager.put("TableHeader.font", base.deriveFont(Font.BOLD));
+
+        if (!flatlaf) {
+            // Nimbus tweaks
+            UIManager.put("control", new Color(247, 249, 252));
+            UIManager.put("nimbusBase", new Color(79, 70, 229));
+            UIManager.put("nimbusBlueGrey", new Color(128, 135, 160));
+            UIManager.put("text", new Color(30, 33, 47));
+        }
+    }
+
+    // ========== Seed Data ==========
+    static void seedData() {
+        addUser(new User(nextUserId++, "admin", "Admin User", "admin", ROLE_ADMIN));
+        addUser(new User(nextUserId++, "t1", "Teacher One", "t1", ROLE_TEACHER));
+        addUser(new User(nextUserId++, "s1", "Student One", "s1", ROLE_STUDENT));
+    }
+
+    // ========== App Frame ==========
+    static class AppFrame extends JFrame {
+        CardLayout cards = new CardLayout();
+        JPanel root = new JPanel(cards);
+        LoginPanel loginPanel = new LoginPanel(this);
+        DashboardPanel dashboardPanel = new DashboardPanel(this);
+
+        AppFrame() {
+            super("Online Examination System");
+            setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+            setSize(1120, 720);
+            setLocationRelativeTo(null);
+
+            // Smooth edges and double-buffering
+            getRootPane().setDoubleBuffered(true);
+
+            root.add(loginPanel, "login");
+            root.add(dashboardPanel, "dash");
+            setContentPane(root);
+
+            cards.show(root, "login");
+        }
+
+        void onLogin(User u) {
+            currentUser = u;
+            dashboardPanel.setUser(u);
+            cards.show(root, "dash");
+        }
+
+        void logout() {
+            currentUser = null;
+            cards.show(root, "login");
+        }
+    }
+
+    // ========== Shared UI Helpers ==========
+    static final Color PRIMARY = new Color(79, 70, 229);
+    static final Color PRIMARY_DARK = new Color(67, 56, 202);
+    static final Color BG = new Color(246, 248, 252);
+    static final Color CARD_BG = Color.WHITE;
+    static final Color TEXT = new Color(34, 39, 54);
+    static final Color MUTED = new Color(110, 117, 140);
+    static final Color SUCCESS = new Color(16, 185, 129);
+    static final Color DANGER = new Color(239, 68, 68);
+
+    static void styleTable(JTable table) {
+        table.setRowHeight(28);
+        table.setShowVerticalLines(false);
+        table.setIntercellSpacing(new Dimension(0, 1));
+        table.setFillsViewportHeight(true);
+
+        // Zebra striping
+        DefaultTableCellRenderer zebra = new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable tbl, Object val, boolean sel, boolean focus, int row, int col) {
+                Component c = super.getTableCellRendererComponent(tbl, val, sel, focus, row, col);
+                if (!sel) {
+                    c.setBackground((row % 2 == 0) ? new Color(249, 250, 252) : Color.WHITE);
+                } else {
+                    c.setBackground(new Color(232, 240, 255));
+                }
+                return c;
+            }
+        };
+        for (int i = 0; i < table.getColumnCount(); i++) {
+            table.getColumnModel().getColumn(i).setCellRenderer(zebra);
+        }
+
+        JTableHeader header = table.getTableHeader();
+        header.setReorderingAllowed(false);
+        header.setBackground(new Color(243, 244, 246));
+        header.setForeground(TEXT);
+        header.setPreferredSize(new Dimension(header.getPreferredSize().width, 36));
+        ((DefaultTableCellRenderer) header.getDefaultRenderer()).setHorizontalAlignment(SwingConstants.LEFT);
+    }
+
+    static class GradientHeader extends JPanel {
+        JLabel title = new JLabel();
+        JLabel subtitle = new JLabel();
+
+        GradientHeader(String text, String sub) {
+            setLayout(new BorderLayout());
+            setBorder(new EmptyBorder(14, 18, 14, 18));
+            title.setText(text);
+            subtitle.setText(sub);
+            title.setFont(new Font("Segoe UI", Font.BOLD, 18));
+            subtitle.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+            title.setForeground(Color.WHITE);
+            subtitle.setForeground(new Color(224, 231, 255));
+
+            JPanel texts = new JPanel(new GridLayout(2, 1));
+            texts.setOpaque(false);
+            texts.add(title);
+            texts.add(subtitle);
+
+            add(texts, BorderLayout.WEST);
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            int w = getWidth(), h = getHeight();
+            GradientPaint gp = new GradientPaint(0, 0, PRIMARY, w, h, PRIMARY_DARK);
+            g2.setPaint(gp);
+            g2.fillRect(0, 0, w, h);
+            g2.dispose();
+        }
+    }
+
+    static class ModernButton extends JButton {
+        ModernButton(String text) {
+            super(text);
+            setFocusPainted(false);
+            setContentAreaFilled(false);
+            setOpaque(false);
+            setForeground(Color.WHITE);
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            setBorder(new EmptyBorder(10, 16, 10, 16));
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            Shape r = new RoundRectangle2D.Double(0, 0, getWidth(), getHeight(), 12, 12);
+            g2.setPaint(new GradientPaint(0, 0, PRIMARY, getWidth(), getHeight(), PRIMARY_DARK));
+            g2.fill(r);
+            g2.dispose();
+            super.paintComponent(g);
+        }
+    }
+
+    static JPanel cardPanel(String title, String subtitle, JComponent center) {
+        JPanel outer = new JPanel(new BorderLayout());
+        outer.setBackground(BG);
+        GradientHeader header = new GradientHeader(title, subtitle);
+        outer.add(header, BorderLayout.NORTH);
+
+        JPanel card = new JPanel(new BorderLayout());
+        card.setBorder(new EmptyBorder(16, 16, 16, 16));
+        card.setBackground(CARD_BG);
+        card.add(center, BorderLayout.CENTER);
+
+        JPanel contentWrap = new JPanel(new BorderLayout());
+        contentWrap.setBorder(new EmptyBorder(16, 16, 16, 16));
+        contentWrap.setBackground(BG);
+        contentWrap.add(card, BorderLayout.CENTER);
+
+        outer.add(contentWrap, BorderLayout.CENTER);
+        return outer;
+    }
+
+    static void msg(Component parent, String s) { JOptionPane.showMessageDialog(parent, s); }
+    static void err(Component parent, String s) {
+        JOptionPane.showMessageDialog(parent, s, "Error", JOptionPane.ERROR_MESSAGE);
+    }
+
+    // ========== Login Panel ==========
+    static class LoginPanel extends JPanel {
+        JTextField userField = new JTextField(18);
+        JPasswordField passField = new JPasswordField(18);
+        JComboBox<String> regRole = new JComboBox<>(new String[]{"Student", "Teacher"});
+        JTextField regUser = new JTextField(18);
+        JTextField regName = new JTextField(18);
+        JPasswordField regPass = new JPasswordField(18);
+
+        LoginPanel(AppFrame frame) {
+            setLayout(new BorderLayout());
+            setBackground(BG);
+
+            GradientHeader header = new GradientHeader("Online Examination System", "Sign in or register to continue");
+            add(header, BorderLayout.NORTH);
+
+            JPanel center = new JPanel(new GridLayout(1, 2, 16, 16));
+            center.setBackground(BG);
+            center.setBorder(new EmptyBorder(16, 16, 16, 16));
+
+            // Login card
+            JPanel loginCard = new JPanel(new GridBagLayout());
+            loginCard.setBackground(CARD_BG);
+            loginCard.setBorder(new EmptyBorder(20, 20, 20, 20));
+            GridBagConstraints c = gbc();
+
+            JLabel lTitle = new JLabel("Login");
+            lTitle.setFont(new Font("Segoe UI", Font.BOLD, 16));
+            c.gridx = 0; c.gridy = 0; c.gridwidth = 2; c.anchor = GridBagConstraints.WEST; c.insets = new Insets(0,0,10,0);
+            loginCard.add(lTitle, c);
+            c.gridwidth = 1; c.insets = new Insets(5,5,5,5);
+
+            c.gridy++; addRow(loginCard, c, new JLabel("Username"), userField);
+            c.gridy++; addRow(loginCard, c, new JLabel("Password"), passField);
+
+            ModernButton loginBtn = new ModernButton("Login");
+            loginBtn.addActionListener(e -> {
+                String u = userField.getText().trim();
+                String p = new String(passField.getPassword());
+                int idx = findUserIndexByUsername(u);
+                if (idx == -1 || !users[idx].password.equals(p)) {
+                    err(this, "Invalid credentials.");
+                } else {
+                    frame.onLogin(users[idx]);
+                }
+            });
+            c.gridx = 1; c.gridy++; c.anchor = GridBagConstraints.EAST;
+            loginCard.add(loginBtn, c);
+
+            // Register card
+            JPanel regCard = new JPanel(new GridBagLayout());
+            regCard.setBackground(CARD_BG);
+            regCard.setBorder(new EmptyBorder(20, 20, 20, 20));
+            GridBagConstraints d = gbc();
+            JLabel rTitle = new JLabel("Register");
+            rTitle.setFont(new Font("Segoe UI", Font.BOLD, 16));
+            d.gridx = 0; d.gridy = 0; d.gridwidth = 2; d.anchor = GridBagConstraints.WEST; d.insets = new Insets(0,0,10,0);
+            regCard.add(rTitle, d);
+            d.gridwidth = 1; d.insets = new Insets(5,5,5,5);
+
+            d.gridy++; addRow(regCard, d, new JLabel("Role"), regRole);
+            d.gridy++; addRow(regCard, d, new JLabel("Username"), regUser);
+            d.gridy++; addRow(regCard, d, new JLabel("Full name"), regName);
+            d.gridy++; addRow(regCard, d, new JLabel("Password"), regPass);
+
+            ModernButton regBtn = new ModernButton("Create Account");
+            regBtn.addActionListener(e -> {
+                String u = regUser.getText().trim();
+                String n = regName.getText().trim();
+                String p = new String(regPass.getPassword());
+                if (u.isEmpty() || n.isEmpty() || p.isEmpty()) {
+                    err(this, "Please fill all fields."); return;
+                }
+                if (findUserIndexByUsername(u) != -1) {
+                    err(this, "Username already exists."); return;
+                }
+                int role = regRole.getSelectedIndex() == 0 ? ROLE_STUDENT : ROLE_TEACHER;
+                addUser(new User(nextUserId++, u, n, p, role));
+                msg(this, "Registered!");
+                regUser.setText(""); regName.setText(""); regPass.setText("");
+            });
+            d.gridx = 1; d.gridy++; d.anchor = GridBagConstraints.EAST;
+            regCard.add(regBtn, d);
+
+            center.add(loginCard);
+            center.add(regCard);
+
+            add(center, BorderLayout.CENTER);
+        }
+
+        private GridBagConstraints gbc() {
+            GridBagConstraints c = new GridBagConstraints();
+            c.insets = new Insets(6, 6, 6, 6);
+            c.anchor = GridBagConstraints.EAST;
+            c.gridx = 0; c.gridy = 0;
+            return c;
+        }
+
+        private void addRow(JPanel p, GridBagConstraints c, JComponent l, JComponent f) {
+            c.gridx = 0; p.add(l, c);
+            c.gridx = 1; p.add(f, c);
+        }
+    }
+
+    // ========== Dashboard ==========
+    static class DashboardPanel extends JPanel {
+        AppFrame frame;
+        JLabel userInfo = new JLabel();
+        JComboBox<String> actionBox = new JComboBox<>();
+        ModernButton goBtn = new ModernButton("Open");
+        JPanel content = new JPanel(new CardLayout());
+
+        AdminPanel adminPanel = new AdminPanel();
+        TeacherPanel teacherPanel = new TeacherPanel();
+        StudentPanel studentPanel = new StudentPanel();
+
+        DashboardPanel(AppFrame frame) {
+            this.frame = frame;
+            setLayout(new BorderLayout());
+            setBackground(BG);
+
+            // App top bar
+            JPanel top = new JPanel(new BorderLayout());
+            top.setBackground(CARD_BG);
+            top.setBorder(new EmptyBorder(8, 16, 8, 16));
+
+            JLabel brand = new JLabel("OES");
+            brand.setFont(new Font("Segoe UI", Font.BOLD, 18));
+            brand.setForeground(PRIMARY);
+            top.add(brand, BorderLayout.WEST);
+
+            JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 4));
+            right.setOpaque(false);
+            userInfo.setForeground(MUTED);
+            JButton logout = new JButton("Logout");
+            logout.setFocusPainted(false);
+            logout.addActionListener(e -> frame.logout());
+            right.add(userInfo);
+            right.add(logout);
+            top.add(right, BorderLayout.EAST);
+            add(top, BorderLayout.NORTH);
+
+            // Action launcher
+            JPanel launcher = new JPanel(new BorderLayout());
+            launcher.setBackground(BG);
+            JPanel boxRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 12));
+            boxRow.setOpaque(false);
+
+            JLabel actionLbl = new JLabel("Actions");
+            actionLbl.setForeground(MUTED);
+            actionBox.setPreferredSize(new Dimension(340, 34));
+            actionBox.setRenderer(new BasicComboBoxRenderer() {
+                @Override
+                public Component getListCellRendererComponent(JList list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
+                    Component c = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                    if (index == 0) setForeground(MUTED);
+                    return c;
+                }
+            });
+            goBtn.addActionListener(e -> switchAction());
+
+            boxRow.add(actionLbl);
+            boxRow.add(actionBox);
+            boxRow.add(goBtn);
+
+            launcher.add(boxRow, BorderLayout.CENTER);
+            add(launcher, BorderLayout.SOUTH);
+
+            // Content
+            content.setBackground(BG);
+            content.add(new JPanel(), "empty");
+            content.add(adminPanel, "admin");
+            content.add(teacherPanel, "teacher");
+            content.add(studentPanel, "student");
+            add(content, BorderLayout.CENTER);
+        }
+
+        void setUser(User u) {
+            userInfo.setText(u.fullName + " (" + u.username + ", " + u.roleName() + ")");
+            actionBox.removeAllItems();
+            actionBox.addItem("— Select an action —");
+
+            if (u.role == ROLE_ADMIN) {
+                actionBox.addItem("List users");
+                actionBox.addItem("Create exam (as teacher)");
+                actionBox.addItem("List exams");
+                ((CardLayout) content.getLayout()).show(content, "admin");
+                adminPanel.refresh();
+            } else if (u.role == ROLE_TEACHER) {
+                actionBox.addItem("Create exam");
+                actionBox.addItem("Add questions");
+                actionBox.addItem("Publish exam");
+                actionBox.addItem("Assign exam to student");
+                actionBox.addItem("Manual grade subjective");
+                actionBox.addItem("View analytics");
+                actionBox.addItem("List my exams");
+                ((CardLayout) content.getLayout()).show(content, "teacher");
+                teacherPanel.setTeacher(u);
+            } else {
+                actionBox.addItem("List assigned exams");
+                actionBox.addItem("Start/take exam");
+                actionBox.addItem("View my grades");
+                ((CardLayout) content.getLayout()).show(content, "student");
+                studentPanel.setStudent(u);
+            }
+            actionBox.setSelectedIndex(0);
+        }
+
+        void switchAction() {
+            String act = (String) actionBox.getSelectedItem();
+            if (act == null || act.startsWith("—")) return;
+            if (currentUser == null) return;
+
+            if (currentUser.role == ROLE_ADMIN) {
+                adminPanel.switchAction(act);
+            } else if (currentUser.role == ROLE_TEACHER) {
+                teacherPanel.switchAction(act);
+            } else {
+                studentPanel.switchAction(act);
+            }
+        }
+    }
+
+    // ========== Admin Panel ==========
+    static class AdminPanel extends JPanel {
+        CardLayout cards = new CardLayout();
+        JPanel root = new JPanel(cards);
+
+        DefaultTableModel usersModel = new DefaultTableModel(new String[]{"ID", "Username", "Full Name", "Role"}, 0);
+        JTable usersTable = new JTable(usersModel);
+
+        DefaultTableModel examsModel = new DefaultTableModel(new String[]{"ID", "Title", "Teacher", "Duration", "Published", "Points"}, 0);
+        JTable examsTable = new JTable(examsModel);
+
+        JComboBox<String> teacherBox = new JComboBox<>();
+        JTextField titleField = new JTextField(22);
+        JTextField descField = new JTextField(22);
+        JSpinner durSpinner = new JSpinner(new SpinnerNumberModel(30, 1, 600, 1));
+
+        AdminPanel() {
+            setLayout(new BorderLayout());
+            setBackground(BG);
+            root.setBackground(BG);
+
+            // List users
+            JPanel listUsersCard = cardPanel("Users", "All registered accounts", new JScrollPane(usersTable));
+            styleTable(usersTable);
+
+            // Create exam (as teacher)
+            JPanel createCardInner = new JPanel(new GridBagLayout());
+            createCardInner.setBackground(CARD_BG);
+            GridBagConstraints c = gbc();
+
+            addRow(createCardInner, c, new JLabel("Teacher username"), teacherBox);
+            addRow(createCardInner, c, new JLabel("Title"), titleField);
+            addRow(createCardInner, c, new JLabel("Description"), descField);
+            addRow(createCardInner, c, new JLabel("Duration (min)"), durSpinner);
+
+            ModernButton createBtn = new ModernButton("Create Exam");
+            createBtn.addActionListener(e -> {
+                String tUser = (String) teacherBox.getSelectedItem();
+                if (tUser == null) { err(this, "Pick a teacher"); return; }
+                int idx = findUserIndexByUsername(tUser);
+                if (idx == -1 || users[idx].role != ROLE_TEACHER) { err(this, "Teacher not found"); return; }
+                String title = titleField.getText().trim();
+                String desc = descField.getText().trim();
+                int dur = (int) durSpinner.getValue();
+                if (title.isEmpty()) { err(this, "Title required"); return; }
+
+                Exam ex = new Exam();
+                ex.id = nextExamId++;
+                ex.ownerTeacherId = users[idx].id;
+                ex.title = title;
+                ex.description = desc;
+                ex.durationMinutes = dur;
+                ex.published = false;
+                addExam(ex);
+                msg(this, "Created exam ID " + ex.id);
+                titleField.setText(""); descField.setText("");
+            });
+            c.gridx = 1; c.gridy++; c.anchor = GridBagConstraints.EAST;
+            createCardInner.add(createBtn, c);
+
+            JPanel createCard = cardPanel("Create Exam (as Teacher)", "Admin can create for any teacher", wrapPad(createCardInner));
+
+            // List exams
+            JPanel listExamsCard = cardPanel("Exams", "All exams in the system", new JScrollPane(examsTable));
+            styleTable(examsTable);
+
+            root.add(new JPanel(), "empty");
+            root.add(listUsersCard, "listUsers");
+            root.add(createCard, "createExamAsTeacher");
+            root.add(listExamsCard, "listExams");
+
+            add(root, BorderLayout.CENTER);
+        }
+// Shared padding wrapper for cards
+static JPanel wrapPad(JComponent c) {
+    JPanel p = new JPanel(new BorderLayout());
+    p.setBackground(BG);
+    p.setBorder(new javax.swing.border.EmptyBorder(16, 16, 16, 16));
+    p.add(c, BorderLayout.CENTER);
+    return p;
+}
+
+        void switchAction(String act) {
+            if (act.equals("List users")) {
+                refreshUsers();
+                cards.show(root, "listUsers");
+            } else if (act.equals("Create exam (as teacher)")) {
+                refreshTeachers();
+                cards.show(root, "createExamAsTeacher");
+            } else if (act.equals("List exams")) {
+                refreshExams(examsModel, false, 0);
+                cards.show(root, "listExams");
+            } else {
+                cards.show(root, "empty");
+            }
+        }
+
+        void refresh() { /* no-op */ }
+
+        void refreshUsers() {
+            clearModel(usersModel);
+            for (int i = 0; i < userCount; i++) {
+                usersModel.addRow(new Object[]{users[i].id, users[i].username, users[i].fullName, users[i].roleName()});
+            }
+        }
+
+        void refreshTeachers() {
+            teacherBox.removeAllItems();
+            for (int i = 0; i < userCount; i++) if (users[i].role == ROLE_TEACHER) teacherBox.addItem(users[i].username);
+        }
+    }
+
+    // ========== Teacher Panel ==========
+    static class TeacherPanel extends JPanel {
+        CardLayout cards = new CardLayout();
+        JPanel root = new JPanel(cards);
+        User teacher;
+
+        // Create
+        JTextField titleField = new JTextField(22);
+        JTextField descField = new JTextField(22);
+        JSpinner durSpinner = new JSpinner(new SpinnerNumberModel(30, 1, 600, 1));
+
+        // Add questions
+        JComboBox<String> examBoxAQ = new JComboBox<>();
+        JComboBox<String> qTypeBox = new JComboBox<>(new String[]{"Single Choice", "Multi Choice", "True/False", "Subjective"});
+        JTextField qText = new JTextField(28);
+        JSpinner qPts = new JSpinner(new SpinnerNumberModel(1.0, 0.0, 1000.0, 0.5));
+
+        JTextField[] choiceFields = {new JTextField(20), new JTextField(20), new JTextField(20), new JTextField(20)};
+        JRadioButton[] singleCorrect = {new JRadioButton("Correct"), new JRadioButton("Correct"), new JRadioButton("Correct"), new JRadioButton("Correct")};
+        ButtonGroup singleGroup = new ButtonGroup();
+        JCheckBox[] multiCorrect = {new JCheckBox("Correct"), new JCheckBox("Correct"), new JCheckBox("Correct"), new JCheckBox("Correct")};
+        JRadioButton tfTrue = new JRadioButton("True");
+        JRadioButton tfFalse = new JRadioButton("False");
+        ButtonGroup tfGroup = new ButtonGroup();
+
+        // Publish
+        JComboBox<String> examBoxPub = new JComboBox<>();
+
+        // Assign
+        JComboBox<String> examBoxAssign = new JComboBox<>();
+        JComboBox<String> studentBoxAssign = new JComboBox<>();
+
+        // Manual grade
+        JComboBox<String> examBoxMG = new JComboBox<>();
+        DefaultListModel<String> sessionsListModel = new DefaultListModel<>();
+        JList<String> sessionsList = new JList<>(sessionsListModel);
+        JTextArea subjectiveView = new JTextArea(12, 50);
+
+        // Analytics
+        JComboBox<String> examBoxAnalytics = new JComboBox<>();
+        JTextArea analyticsArea = new JTextArea();
+
+        // My exams
+        DefaultTableModel myExamsModel = new DefaultTableModel(new String[]{"ID", "Title", "Duration", "Published", "Points"}, 0);
+        JTable myExamsTable = new JTable(myExamsModel);
+
+        TeacherPanel() {
+            setLayout(new BorderLayout());
+            setBackground(BG);
+            root.setBackground(BG);
+
+            // Create exam
+            JPanel createInner = new JPanel(new GridBagLayout());
+            createInner.setBackground(CARD_BG);
+            GridBagConstraints c = gbc();
+            addRow(createInner, c, new JLabel("Title"), titleField);
+            addRow(createInner, c, new JLabel("Description"), descField);
+            addRow(createInner, c, new JLabel("Duration (min)"), durSpinner);
+            ModernButton createBtn = new ModernButton("Create");
+            createBtn.addActionListener(e -> doCreate());
+            c.gridx = 1; c.gridy++; c.anchor = GridBagConstraints.EAST; createInner.add(createBtn, c);
+            JPanel createCard = cardPanel("Create Exam", "Design a new exam", wrapPad(createInner));
+
+            // Add questions
+            JPanel addQInner = new JPanel(new GridBagLayout());
+            addQInner.setBackground(CARD_BG);
+            GridBagConstraints a = gbc();
+            addRow(addQInner, a, new JLabel("Exam"), examBoxAQ);
+            addRow(addQInner, a, new JLabel("Question type"), qTypeBox);
+            addRow(addQInner, a, new JLabel("Question text"), qText);
+            addRow(addQInner, a, new JLabel("Points"), qPts);
+
+            JPanel choicesPanel = new JPanel(new GridLayout(4, 1, 6, 6));
+            choicesPanel.setOpaque(false);
+            for (int i = 0; i < 4; i++) {
+                JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+                row.setOpaque(false);
+                row.add(new JLabel("Choice " + (i + 1)));
+                row.add(choiceFields[i]);
+                singleGroup.add(singleCorrect[i]);
+                row.add(singleCorrect[i]);
+                row.add(multiCorrect[i]);
+                choicesPanel.add(row);
+            }
+
+            JPanel tfPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+            tfPanel.setOpaque(false);
+            tfGroup.add(tfTrue); tfGroup.add(tfFalse);
+            tfPanel.add(new JLabel("Correct"));
+            tfPanel.add(tfTrue); tfPanel.add(tfFalse);
+
+            JPanel dynamic = new JPanel(new CardLayout());
+            dynamic.setOpaque(false);
+            dynamic.add(new JPanel(), "subjective");
+            dynamic.add(choicesPanel, "mcq");
+            dynamic.add(tfPanel, "tf");
+
+            qTypeBox.addActionListener(e -> {
+                String type = (String) qTypeBox.getSelectedItem();
+                CardLayout cl = (CardLayout) dynamic.getLayout();
+                if ("True/False".equals(type)) cl.show(dynamic, "tf");
+                else if ("Subjective".equals(type)) cl.show(dynamic, "subjective");
+                else cl.show(dynamic, "mcq");
+            });
+            ((CardLayout) dynamic.getLayout()).show(dynamic, "mcq");
+            a.gridx = 1; addQInner.add(dynamic, a); a.gridy++;
+
+            ModernButton addQBtn = new ModernButton("Add Question");
+            addQBtn.addActionListener(e -> doAddQuestion());
+            a.gridx = 1; addQInner.add(addQBtn, a);
+            JPanel addQCard = cardPanel("Add Questions", "Single/Multi/True-False/Subjective", wrapPad(addQInner));
+
+            // Publish
+            JPanel publishInner = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
+            publishInner.setBackground(CARD_BG);
+            publishInner.add(new JLabel("Exam"));
+            publishInner.add(examBoxPub);
+            ModernButton pubBtn = new ModernButton("Publish");
+            pubBtn.addActionListener(e -> doPublish());
+            publishInner.add(pubBtn);
+            JPanel publishCard = cardPanel("Publish Exam", "Make the exam available to students", wrapPad(publishInner));
+
+            // Assign
+            JPanel assignInner = new JPanel(new GridBagLayout());
+            assignInner.setBackground(CARD_BG);
+            GridBagConstraints as = gbc();
+            addRow(assignInner, as, new JLabel("Exam"), examBoxAssign);
+            addRow(assignInner, as, new JLabel("Student username"), studentBoxAssign);
+            ModernButton assignBtn = new ModernButton("Assign");
+            assignBtn.addActionListener(e -> doAssign());
+            as.gridx = 1; as.gridy++; as.anchor = GridBagConstraints.EAST; assignInner.add(assignBtn, as);
+            JPanel assignCard = cardPanel("Assign Exam", "Assign to specific students", wrapPad(assignInner));
+
+            // Manual grade
+            JPanel manualInner = new JPanel(new BorderLayout(8, 8));
+            manualInner.setBackground(CARD_BG);
+            JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
+            top.setOpaque(false);
+            top.add(new JLabel("Exam"));
+            top.add(examBoxMG);
+            JButton reload = new JButton("Load Sessions");
+            reload.addActionListener(e -> refreshSessionsList());
+            top.add(reload);
+            manualInner.add(top, BorderLayout.NORTH);
+
+            sessionsList.setFixedCellWidth(260);
+            JScrollPane left = new JScrollPane(sessionsList);
+            subjectiveView.setEditable(false);
+            JScrollPane right = new JScrollPane(subjectiveView);
+            JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left, right);
+            split.setDividerLocation(300);
+            manualInner.add(split, BorderLayout.CENTER);
+
+            JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+            actions.setOpaque(false);
+            ModernButton gradeBtn = new ModernButton("Grade Selected Session");
+            gradeBtn.addActionListener(e -> openManualGradeDialog());
+            actions.add(gradeBtn);
+            manualInner.add(actions, BorderLayout.SOUTH);
+
+            JPanel manualCard = cardPanel("Manual Grading", "Grade subjective responses", wrapPad(manualInner));
+            sessionsList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) previewSubjectiveForSelectedSession(); });
+
+            // Analytics
+            JPanel analyticsInner = new JPanel(new BorderLayout(8, 8));
+            analyticsInner.setBackground(CARD_BG);
+            JPanel topAn = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
+            topAn.setOpaque(false);
+            topAn.add(new JLabel("Exam"));
+            topAn.add(examBoxAnalytics);
+            JButton go = new JButton("Refresh");
+            go.addActionListener(e -> refreshAnalytics());
+            topAn.add(go);
+            analyticsArea.setEditable(false);
+            analyticsArea.setFont(new Font("Consolas", Font.PLAIN, 13));
+            analyticsInner.add(topAn, BorderLayout.NORTH);
+            analyticsInner.add(new JScrollPane(analyticsArea), BorderLayout.CENTER);
+            JPanel analyticsCard = cardPanel("Analytics", "Attempts, average, min/max, item difficulty", wrapPad(analyticsInner));
+
+            // My exams
+            JPanel myExamsCard = cardPanel("My Exams", "All exams created by you", new JScrollPane(myExamsTable));
+            styleTable(myExamsTable);
+
+            root.add(new JPanel(), "empty");
+            root.add(createCard, "createExam");
+            root.add(addQCard, "addQ");
+            root.add(publishCard, "publish");
+            root.add(assignCard, "assign");
+            root.add(manualCard, "manualGrade");
+            root.add(analyticsCard, "analytics");
+            root.add(myExamsCard, "listMyExams");
+
+            add(root, BorderLayout.CENTER);
+        }
+
+        JPanel wrapPad(JComponent c) {
+            JPanel p = new JPanel(new BorderLayout());
+            p.setBackground(BG);
+            p.setBorder(new EmptyBorder(16, 16, 16, 16));
+            p.add(c, BorderLayout.CENTER);
+            return p;
+        }
+
+        void setTeacher(User t) {
+            this.teacher = t;
+            refreshExamBoxes();
+        }
+
+        void switchAction(String act) {
+            switch (act) {
+                case "Create exam": cards.show(root, "createExam"); break;
+                case "Add questions": refreshExamBoxes(); cards.show(root, "addQ"); break;
+                case "Publish exam": refreshExamBoxes(); cards.show(root, "publish"); break;
+                case "Assign exam to student": refreshStudentsBox(); refreshExamBoxes(); cards.show(root, "assign"); break;
+                case "Manual grade subjective": refreshExamBoxes(); refreshSessionsList(); cards.show(root, "manualGrade"); break;
+                case "View analytics": refreshExamBoxes(); refreshAnalytics(); cards.show(root, "analytics"); break;
+                case "List my exams": refreshMyExams(); cards.show(root, "listMyExams"); break;
+                default: cards.show(root, "empty");
+            }
+        }
+
+        // Actions
+        void doCreate() {
+            if (teacher == null) return;
+            String title = titleField.getText().trim();
+            String desc = descField.getText().trim();
+            int dur = (int) durSpinner.getValue();
+            if (title.isEmpty()) { err(this, "Title required"); return; }
+            Exam ex = new Exam();
+            ex.id = nextExamId++;
+            ex.ownerTeacherId = teacher.id;
+            ex.title = title;
+            ex.description = desc;
+            ex.durationMinutes = dur;
+            ex.published = false;
+            addExam(ex);
+            msg(this, "Created exam ID " + ex.id);
+            titleField.setText(""); descField.setText("");
+            refreshExamBoxes();
+        }
+
+        void doAddQuestion() {
+            Exam ex = getSelectedTeacherExam(examBoxAQ);
+            if (ex == null) { err(this, "Select exam"); return; }
+            Question q = new Question();
+            q.id = nextQuestionId++;
+            q.text = qText.getText().trim();
+            q.points = (double) qPts.getValue();
+            if (q.text.isEmpty() || q.points < 0) { err(this, "Invalid question or points"); return; }
+            String type = (String) qTypeBox.getSelectedItem();
+
+            if (type.equals("Single Choice")) {
+                q.type = Q_SINGLE;
+                q.choiceCount = 0;
+                for (int i = 0; i < 4; i++) {
+                    String t = choiceFields[i].getText().trim();
+                    if (!t.isEmpty()) q.choices[q.choiceCount++] = t;
+                }
+                int corr = -1;
+                for (int i = 0; i < 4; i++) if (singleCorrect[i].isSelected()) corr = i;
+                if (q.choiceCount == 0 || corr < 0 || corr >= q.choiceCount) { err(this, "Set choices and correct option"); return; }
+                q.correctIndex = corr;
+            } else if (type.equals("Multi Choice")) {
+                q.type = Q_MULTI;
+                q.choiceCount = 0; q.correctIdxCount = 0;
+                for (int i = 0; i < 4; i++) {
+                    String t = choiceFields[i].getText().trim();
+                    if (!t.isEmpty()) {
+                        q.choices[q.choiceCount] = t;
+                        if (multiCorrect[i].isSelected()) q.correctIndexes[q.correctIdxCount++] = q.choiceCount;
+                        q.choiceCount++;
+                    }
+                }
+                if (q.choiceCount == 0 || q.correctIdxCount == 0) { err(this, "Set choices and at least one correct"); return; }
+            } else if (type.equals("True/False")) {
+                q.type = Q_TRUE_FALSE;
+                if (!tfTrue.isSelected() && !tfFalse.isSelected()) { err(this, "Select True or False"); return; }
+                q.correctTrue = tfTrue.isSelected();
+            } else {
+                q.type = Q_SUBJECTIVE;
+            }
+
+            if (ex.qCount >= MAX_QUESTIONS_PER_EXAM) { err(this, "Max questions reached"); return; }
+            ex.questions[ex.qCount++] = q;
+
+            qText.setText(""); qPts.setValue(1.0);
+            for (int i = 0; i < 4; i++) { choiceFields[i].setText(""); singleCorrect[i].setSelected(false); multiCorrect[i].setSelected(false); }
+            tfTrue.setSelected(false); tfFalse.setSelected(false);
+
+            msg(this, "Question added (ID " + q.id + ")");
+        }
+
+        void doPublish() {
+            Exam ex = getSelectedTeacherExam(examBoxPub);
+            if (ex == null) { err(this, "Select exam"); return; }
+            if (ex.qCount == 0) { err(this, "Cannot publish empty exam"); return; }
+            ex.published = true;
+            msg(this, "Published");
+        }
+
+        void doAssign() {
+            Exam ex = getSelectedTeacherExam(examBoxAssign);
+            if (ex == null || !ex.published) { err(this, "Select a published exam"); return; }
+            String stuUser = (String) studentBoxAssign.getSelectedItem();
+            if (stuUser == null) { err(this, "Select student"); return; }
+            int idx = findUserIndexByUsername(stuUser);
+            if (idx == -1 || users[idx].role != ROLE_STUDENT) { err(this, "Invalid student"); return; }
+
+            if (isStudentAssignedToExam(ex, users[idx].id)) { err(this, "Already assigned"); return; }
+            if (ex.assignedCount >= MAX_ASSIGN) { err(this, "Assignment list full"); return; }
+            ex.assignedStudentIds[ex.assignedCount++] = users[idx].id;
+            msg(this, "Assigned");
+        }
+
+        void refreshExamBoxes() {
+            examBoxAQ.removeAllItems();
+            examBoxPub.removeAllItems();
+            examBoxAssign.removeAllItems();
+            examBoxMG.removeAllItems();
+            examBoxAnalytics.removeAllItems();
+            if (teacher == null) return;
+            for (int i = 0; i < examCount; i++) {
+                if (exams[i].ownerTeacherId == teacher.id) {
+                    String item = exams[i].id + " - " + exams[i].title;
+                    examBoxAQ.addItem(item);
+                    examBoxPub.addItem(item);
+                    examBoxAssign.addItem(item);
+                    examBoxMG.addItem(item);
+                    examBoxAnalytics.addItem(item);
+                }
+            }
+        }
+
+        void refreshStudentsBox() {
+            studentBoxAssign.removeAllItems();
+            for (int i = 0; i < userCount; i++) if (users[i].role == ROLE_STUDENT) studentBoxAssign.addItem(users[i].username);
+        }
+
+        void refreshSessionsList() {
+            sessionsListModel.clear();
+            Exam ex = getSelectedTeacherExam(examBoxMG);
+            if (ex == null) return;
+            for (int i = 0; i < sessionCount; i++) {
+                ExamSession s = sessions[i];
+                if (s.examId == ex.id && s.status != STATUS_ACTIVE) {
+                    User stu = findUserById(s.studentId);
+                    String item = s.id + " | " + (stu != null ? stu.username : s.studentId) + " | " + s.statusName();
+                    sessionsListModel.addElement(item);
+                }
+            }
+            subjectiveView.setText("");
+        }
+
+        void previewSubjectiveForSelectedSession() {
+            String sel = sessionsList.getSelectedValue();
+            if (sel == null) { subjectiveView.setText(""); return; }
+            int sid = Integer.parseInt(sel.split("\\|")[0].trim());
+            ExamSession s = findSessionById(sid);
+            if (s == null) { subjectiveView.setText(""); return; }
+            Exam ex = findExamById(s.examId);
+            StringBuilder sb = new StringBuilder();
+            sb.append("Session ").append(s.id).append("\n");
+            for (int i = 0; i < ex.qCount; i++) {
+                Question q = ex.questions[i];
+                if (q.type == Q_SUBJECTIVE) {
+                    Answer a = findAnswerForQuestion(s, q.id);
+                    sb.append("Q").append(q.id).append(" (").append(q.points).append(" pts): ").append(q.text).append("\n");
+                    sb.append("Ans: ").append(a != null && a.textAnswer != null ? a.textAnswer : "(no answer)").append("\n\n");
+                }
+            }
+            Grade g = findGradeBySessionId(s.id);
+            double total = g == null ? 0 : (g.autoScore + g.manualScore);
+            sb.append("Current total: ").append(total).append("\n");
+            subjectiveView.setText(sb.toString());
+        }
+
+        void openManualGradeDialog() {
+            String sel = sessionsList.getSelectedValue();
+            if (sel == null) { err(this, "Select a session"); return; }
+            int sid = Integer.parseInt(sel.split("\\|")[0].trim());
+            ExamSession s = findSessionById(sid);
+            if (s == null) return;
+            Exam ex = findExamById(s.examId);
+
+            JPanel panel = new JPanel(new GridBagLayout());
+            panel.setPreferredSize(new Dimension(720, 420));
+            GridBagConstraints c = gbc();
+
+            JSpinner[] spinners = new JSpinner[ex.qCount];
+            int idx = 0;
+            for (int i = 0; i < ex.qCount; i++) {
+                Question q = ex.questions[i];
+                if (q.type == Q_SUBJECTIVE) {
+                    Answer a = findAnswerForQuestion(s, q.id);
+                    String ansText = a != null && a.textAnswer != null ? a.textAnswer : "(no answer)";
+                    JTextArea ta = new JTextArea(ansText, 3, 40);
+                    ta.setLineWrap(true); ta.setWrapStyleWord(true); ta.setEditable(false);
+                    addRow(panel, c, new JLabel("Q" + q.id + " (" + q.points + "): " + q.text), new JScrollPane(ta));
+                    JSpinner sp = new JSpinner(new SpinnerNumberModel(0.0, 0.0, q.points, 0.5));
+                    spinners[i] = sp;
+                    addRow(panel, c, new JLabel("Score to award"), sp);
+                    idx++;
+                }
+            }
+            if (idx == 0) { msg(this, "No subjective questions"); return; }
+
+            int res = JOptionPane.showConfirmDialog(this, panel, "Manual Grade", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+            if (res == JOptionPane.OK_OPTION) {
+                double added = 0;
+                for (int i = 0; i < ex.qCount; i++) {
+                    Question q = ex.questions[i];
+                    if (q.type == Q_SUBJECTIVE) {
+                        Answer a = findAnswerForQuestion(s, q.id);
+                        double sc = spinners[i] != null ? (double) spinners[i].getValue() : 0.0;
+                        if (sc < 0) sc = 0;
+                        if (sc > q.points) sc = q.points;
+                        if (a != null) a.score += sc;
+                        added += sc;
+                    }
+                }
+                Grade g = getOrCreateGrade(s.id);
+                g.manualScore += added;
+                msg(this, "Manual score added: " + added + ". Total now: " + (g.autoScore + g.manualScore));
+                previewSubjectiveForSelectedSession();
+            }
+        }
+
+        void refreshAnalytics() {
+            analyticsArea.setText("");
+            Exam ex = getSelectedTeacherExam(examBoxAnalytics);
+            if (ex == null) return;
+
+            int attempts = 0;
+            double sum = 0, min = 1e18, max = -1e18;
+
+            for (int i = 0; i < sessionCount; i++) {
+                ExamSession s = sessions[i];
+                if (s.examId == ex.id && s.status != STATUS_ACTIVE) {
+                    Grade g = findGradeBySessionId(s.id);
+                    double total = (g == null) ? 0 : (g.autoScore + g.manualScore);
+                    attempts++; sum += total; min = Math.min(min, total); max = Math.max(max, total);
+                }
+            }
+            StringBuilder sb = new StringBuilder();
+            sb.append("Exam: ").append(ex.title).append(" (ID ").append(ex.id).append(")\n");
+            sb.append("Total points: ").append(ex.totalPoints()).append("\n");
+            if (attempts == 0) sb.append("No attempts yet.\n");
+            else sb.append("Attempts: ").append(attempts).append(" | Avg: ").append(round2(sum / attempts))
+                    .append(" | Min: ").append(round2(min)).append(" | Max: ").append(round2(max)).append("\n");
+
+            sb.append("\n--- Item Analysis (objective only) ---\n");
+            for (int qi = 0; qi < ex.qCount; qi++) {
+                Question q = ex.questions[qi];
+                if (q.type == Q_SUBJECTIVE) { sb.append("Q").append(q.id).append(" [Subjective]: N/A\n"); continue; }
+                int correct = 0, answered = 0;
+                for (int sj = 0; sj < sessionCount; sj++) {
+                    ExamSession s = sessions[sj];
+                    if (s.examId == ex.id && s.status != STATUS_ACTIVE) {
+                        Answer a = findAnswerForQuestion(s, q.id);
+                        if (a != null) { answered++; if (isAnswerCorrect(q, a)) correct++; }
+                    }
+                }
+                double p = answered == 0 ? 0 : (correct * 1.0 / answered);
+                sb.append("Q").append(q.id).append(" [").append(q.typeName()).append("]: P(correct)=").append(round2(p)).append("\n");
+            }
+            analyticsArea.setText(sb.toString());
+        }
+
+        void refreshMyExams() {
+            clearModel(myExamsModel);
+            if (teacher == null) return;
+            for (int i = 0; i < examCount; i++) {
+                if (exams[i].ownerTeacherId == teacher.id) {
+                    myExamsModel.addRow(new Object[]{exams[i].id, exams[i].title, exams[i].durationMinutes,
+                            exams[i].published, exams[i].totalPoints()});
+                }
+            }
+        }
+
+        Exam getSelectedTeacherExam(JComboBox<String> cb) {
+            String sel = (String) cb.getSelectedItem();
+            if (sel == null || sel.trim().isEmpty()) return null;
+            int id = Integer.parseInt(sel.split("-")[0].trim());
+            return findExamById(id);
+        }
+    }
+
+    // ========== Student Panel ==========
+    static class StudentPanel extends JPanel {
+        CardLayout cards = new CardLayout();
+        JPanel root = new JPanel(cards);
+        User student;
+
+        // List assigned
+        DefaultTableModel assignedModel = new DefaultTableModel(new String[]{"ID", "Title", "Duration", "Points", "Published"}, 0);
+        JTable assignedTable = new JTable(assignedModel);
+
+        // Start/take
+        JComboBox<String> examBoxStart = new JComboBox<>();
+        ModernButton startBtn = new ModernButton("Start Exam");
+
+        // View grades
+        DefaultTableModel gradesModel = new DefaultTableModel(new String[]{"Session ID", "Exam", "Total"}, 0);
+        JTable gradesTable = new JTable(gradesModel);
+
+        StudentPanel() {
+            setLayout(new BorderLayout());
+            setBackground(BG);
+            root.setBackground(BG);
+
+            // Assigned
+            JPanel assignedCard = cardPanel("Assigned Exams", "Exams assigned to you", new JScrollPane(assignedTable));
+            styleTable(assignedTable);
+
+            // Start/take
+            JPanel startInner = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 12));
+            startInner.setBackground(CARD_BG);
+            JLabel l = new JLabel("Exam");
+            startInner.add(l);
+            examBoxStart.setPreferredSize(new Dimension(360, 34));
+            startInner.add(examBoxStart);
+            startBtn.addActionListener(e -> startExam());
+            startInner.add(startBtn);
+            JPanel startCard = cardPanel("Take Exam", "Start and complete your exam", wrapPad(startInner));
+
+            // Grades
+            JPanel gradesCard = cardPanel("My Grades", "Your completed sessions and total scores", new JScrollPane(gradesTable));
+            styleTable(gradesTable);
+
+            root.add(new JPanel(), "empty");
+            root.add(assignedCard, "assigned");
+            root.add(startCard, "start");
+            root.add(gradesCard, "grades");
+
+            add(root, BorderLayout.CENTER);
+        }
+
+        JPanel wrapPad(JComponent c) {
+            JPanel p = new JPanel(new BorderLayout());
+            p.setBackground(BG);
+            p.setBorder(new EmptyBorder(16, 16, 16, 16));
+            p.add(c, BorderLayout.CENTER);
+            return p;
+        }
+
+        void setStudent(User s) {
+            this.student = s;
+            refreshAssigned();
+            refreshGrades();
+            refreshExamsToStart();
+        }
+
+        void switchAction(String act) {
+            if (act.equals("List assigned exams")) { refreshAssigned(); cards.show(root, "assigned"); }
+            else if (act.equals("Start/take exam")) { refreshExamsToStart(); cards.show(root, "start"); }
+            else if (act.equals("View my grades")) { refreshGrades(); cards.show(root, "grades"); }
+            else cards.show(root, "empty");
+        }
+
+        void refreshAssigned() {
+            clearModel(assignedModel);
+            if (student == null) return;
+            for (int i = 0; i < examCount; i++) {
+                Exam e = exams[i];
+                if (e.published && isStudentAssignedToExam(e, student.id)) {
+                    assignedModel.addRow(new Object[]{e.id, e.title, e.durationMinutes, e.totalPoints(), e.published});
+                }
+            }
+        }
+
+        void refreshExamsToStart() {
+            examBoxStart.removeAllItems();
+            if (student == null) return;
+            for (int i = 0; i < examCount; i++) {
+                Exam e = exams[i];
+                if (e.published && isStudentAssignedToExam(e, student.id) && !hasSubmittedSession(student.id, e.id)) {
+                    examBoxStart.addItem(e.id + " - " + e.title);
+                }
+            }
+        }
+
+        void refreshGrades() {
+            clearModel(gradesModel);
+            if (student == null) return;
+            for (int i = 0; i < sessionCount; i++) {
+                ExamSession s = sessions[i];
+                if (s.studentId == student.id && s.status != STATUS_ACTIVE) {
+                    Grade g = findGradeBySessionId(s.id);
+                    Exam e = findExamById(s.examId);
+                    double total = (g == null) ? 0 : (g.autoScore + g.manualScore);
+                    gradesModel.addRow(new Object[]{s.id, e != null ? e.title : s.examId, total});
+                }
+            }
+        }
+
+        void startExam() {
+            String sel = (String) examBoxStart.getSelectedItem();
+            if (sel == null) { err(this, "Pick an exam"); return; }
+            int exId = Integer.parseInt(sel.split("-")[0].trim());
+            Exam e = findExamById(exId);
+            if (e == null) { err(this, "Exam not found"); return; }
+
+            if (!e.published || !isStudentAssignedToExam(e, student.id)) { err(this, "You cannot take this exam"); return; }
+            if (hasSubmittedSession(student.id, e.id)) { err(this, "You already took this exam"); return; }
+
+            ExamSession s = new ExamSession();
+            s.id = nextSessionId++;
+            s.examId = e.id;
+            s.studentId = student.id;
+            s.startedAtMillis = System.currentTimeMillis();
+            s.expiresAtMillis = s.startedAtMillis + e.durationMinutes * 60L * 1000L;
+            s.status = STATUS_ACTIVE;
+            addSession(s);
+
+            new ExamRunnerDialog(SwingUtilities.getWindowAncestor(this), e, s).setVisible(true);
+
+            refreshGrades();
+            refreshAssigned();
+            refreshExamsToStart();
+        }
+    }
+
+    // ========== Exam Runner Dialog (Smooth UI) ==========
+    static class ExamRunnerDialog extends JDialog {
+        Exam exam;
+        ExamSession session;
+
+        JLabel titleLbl = new JLabel();
+        JLabel timerLbl = new JLabel();
+        JProgressBar timeBar = new JProgressBar(0, 1000);
+        JLabel qLbl = new JLabel();
+        JPanel answerPanel = new JPanel(new CardLayout());
+        int currentIndex = 0;
+
+        // For single/multi
+        JRadioButton[] singleRadios = new JRadioButton[Math.min(MAX_CHOICES, 10)];
+        ButtonGroup singleGroup = new ButtonGroup();
+        JCheckBox[] multiChecks = new JCheckBox[Math.min(MAX_CHOICES, 10)];
+        JRadioButton tfTrue = new JRadioButton("True");
+        JRadioButton tfFalse = new JRadioButton("False");
+        ButtonGroup tfGroup = new ButtonGroup();
+        JTextArea subjectiveArea = new JTextArea(6, 44);
+
+        Timer swingTimer;
+
+        ExamRunnerDialog(Window owner, Exam e, ExamSession s) {
+            super(owner, "Take Exam", ModalityType.APPLICATION_MODAL);
+            this.exam = e; this.session = s;
+            setSize(920, 640);
+            setLocationRelativeTo(owner);
+            setLayout(new BorderLayout(10, 10));
+            getRootPane().setDoubleBuffered(true);
+
+            JPanel north = new JPanel(new BorderLayout());
+            north.setBorder(new EmptyBorder(12, 16, 12, 16));
+            north.setBackground(CARD_BG);
+            titleLbl.setText(e.title + "  •  Duration: " + e.durationMinutes + " min");
+            titleLbl.setFont(new Font("Segoe UI", Font.BOLD, 16));
+            north.add(titleLbl, BorderLayout.WEST);
+
+            JPanel timeBox = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 0));
+            timeBox.setOpaque(false);
+            timerLbl.setFont(new Font("Segoe UI", Font.BOLD, 16));
+            timeBar.setPreferredSize(new Dimension(260, 12));
+            timeBar.setForeground(PRIMARY);
+            timeBox.add(timerLbl);
+            timeBox.add(timeBar);
+            north.add(timeBox, BorderLayout.EAST);
+            add(north, BorderLayout.NORTH);
+
+            JPanel center = new JPanel(new BorderLayout());
+            center.setBorder(new EmptyBorder(10, 16, 10, 16));
+            center.setBackground(BG);
+            qLbl.setFont(new Font("Segoe UI", Font.PLAIN, 15));
+            qLbl.setBorder(new EmptyBorder(8, 8, 8, 8));
+            center.add(qLbl, BorderLayout.NORTH);
+
+            setupAnswerCards();
+            JPanel cardWrap = new JPanel(new BorderLayout());
+            cardWrap.setBackground(CARD_BG);
+            cardWrap.setBorder(new EmptyBorder(12, 12, 12, 12));
+            cardWrap.add(answerPanel, BorderLayout.CENTER);
+            center.add(cardWrap, BorderLayout.CENTER);
+            add(center, BorderLayout.CENTER);
+
+            JPanel bottom = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10,12));
+            bottom.setBackground(CARD_BG);
+            JButton prev = new JButton("Previous");
+            JButton next = new JButton("Next");
+            ModernButton submit = new ModernButton("Submit");
+            prev.addActionListener(e1 -> move(-1));
+            next.addActionListener(e1 -> move(1));
+            submit.addActionListener(e12 -> submitExam(false));
+            bottom.add(prev); bottom.add(next); bottom.add(submit);
+            add(bottom, BorderLayout.SOUTH);
+
+            loadQuestion(0);
+            startTimer();
+
+            addWindowListener(new WindowAdapter() {
+                public void windowClosing(WindowEvent e) {
+                    if (session.status == STATUS_ACTIVE) {
+                        int res = JOptionPane.showConfirmDialog(ExamRunnerDialog.this, "Submit before closing?", "Confirm", JOptionPane.YES_NO_OPTION);
+                        if (res == JOptionPane.YES_OPTION) submitExam(false);
+                        else submitExam(true);
+                    }
+                }
+            });
+        }
+
+        void setupAnswerCards() {
+            // Single
+            JPanel singlePanel = new JPanel(new GridLayout(0, 1, 8, 8));
+            singlePanel.setOpaque(false);
+            for (int i = 0; i < singleRadios.length; i++) {
+                singleRadios[i] = new JRadioButton();
+                singleRadios[i].setOpaque(false);
+                singleGroup.add(singleRadios[i]);
+                singlePanel.add(singleRadios[i]);
+            }
+
+            // Multi
+            JPanel multiPanel = new JPanel(new GridLayout(0, 1, 8, 8));
+            multiPanel.setOpaque(false);
+            for (int i = 0; i < multiChecks.length; i++) {
+                multiChecks[i] = new JCheckBox();
+                multiChecks[i].setOpaque(false);
+                multiPanel.add(multiChecks[i]);
+            }
+
+            // True/False
+            JPanel tfPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
+            tfPanel.setOpaque(false);
+            tfGroup.add(tfTrue); tfGroup.add(tfFalse);
+            tfPanel.add(tfTrue); tfPanel.add(tfFalse);
+
+            // Subjective
+            JPanel subjPanel = new JPanel(new BorderLayout());
+            subjPanel.setOpaque(false);
+            subjectiveArea.setLineWrap(true);
+            subjectiveArea.setWrapStyleWord(true);
+            subjPanel.add(new JScrollPane(subjectiveArea), BorderLayout.CENTER);
+
+            answerPanel.setOpaque(false);
+            answerPanel.add(singlePanel, "single");
+            answerPanel.add(multiPanel, "multi");
+            answerPanel.add(tfPanel, "tf");
+            answerPanel.add(subjPanel, "subj");
+        }
+
+        void move(int delta) {
+            saveCurrentAnswer();
+            int newIndex = currentIndex + delta;
+            if (newIndex < 0 || newIndex >= exam.qCount) return;
+            loadQues
